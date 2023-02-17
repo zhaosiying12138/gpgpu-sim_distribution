@@ -921,7 +921,10 @@ simt_stack::simt_stack(unsigned wid, unsigned warpSize, class gpgpu_sim *gpu) {
   reset();
 }
 
-void simt_stack::reset() { m_stack.clear(); }
+void simt_stack::reset() {
+  m_stack.clear();
+  m_rt_stack.clear();
+}
 
 void simt_stack::launch(address_type start_pc, const simt_mask_t &active_mask) {
   reset();
@@ -1133,8 +1136,25 @@ void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
     // discard the new entry if its PC matches with reconvergence PC
     // that automatically reconverges the entry
     // If the top stack entry is CALL, dont reconverge.
-    if (tmp_next_pc == top_recvg_pc && (top_type != STACK_ENTRY_TYPE_CALL))
-      continue;
+    if (tmp_next_pc == top_recvg_pc && (top_type != STACK_ENTRY_TYPE_CALL)) {
+      int rtid = m_stack.back().m_rtid;
+      simt_mask_t msk = m_stack.back().m_active_mask;
+      m_rt_stack[rtid].m_pending_mask &= ~msk;
+      m_stack.pop_back();
+      if (!m_rt_stack[rtid].m_pending_mask.any()) {
+        printf("[ZSY] pending mask is zero!\n");
+        m_stack.push_back(simt_stack_entry());
+        m_stack.back().m_active_mask = m_rt_stack.back().m_active_mask;
+        m_stack.back().m_branch_div_cycle = m_rt_stack.back().m_branch_div_cycle;
+        m_stack.back().m_calldepth = m_rt_stack.back().m_calldepth;
+        m_stack.back().m_pc = m_rt_stack.back().m_pc;
+        m_stack.back().m_recvg_pc = m_rt_stack.back().m_recvg_pc;
+        m_stack.back().m_rtid = m_rt_stack.back().m_rtid;
+        m_stack.back().m_type = m_rt_stack.back().m_type;
+        m_rt_stack.pop_back();
+      }
+      return;
+    }
 
     // this new entry is not converging
     // if this entry does not include thread from the warp, divergence occurs
@@ -1144,10 +1164,18 @@ void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
       // stack
       new_recvg_pc = recvg_pc;
       if (new_recvg_pc != top_recvg_pc) {
-        m_stack.back().m_pc = new_recvg_pc;
-        m_stack.back().m_branch_div_cycle =
+        m_rt_stack.push_back(simt_stack_entry());
+        m_rt_stack.back().m_active_mask = m_stack.back().m_active_mask;
+        m_rt_stack.back().m_pending_mask = m_stack.back().m_active_mask;
+        m_rt_stack.back().m_branch_div_cycle =
             m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+        m_rt_stack.back().m_calldepth = m_stack.back().m_calldepth;
+        m_rt_stack.back().m_pc = new_recvg_pc;
+        m_rt_stack.back().m_recvg_pc = m_stack.back().m_recvg_pc;
+        m_rt_stack.back().m_rtid = m_stack.back().m_rtid;
+        m_rt_stack.back().m_type = m_stack.back().m_type;
 
+        m_stack.pop_back();
         m_stack.push_back(simt_stack_entry());
       }
     }
@@ -1161,6 +1189,7 @@ void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
     if (warp_diverged) {
       m_stack.back().m_calldepth = 0;
       m_stack.back().m_recvg_pc = new_recvg_pc;
+      m_stack.back().m_rtid = m_rt_stack.size() - 1;
     } else {
       m_stack.back().m_recvg_pc = top_recvg_pc;
     }

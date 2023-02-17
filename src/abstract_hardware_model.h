@@ -424,19 +424,24 @@ class simt_stack {
     address_type m_pc;
     unsigned int m_calldepth;
     simt_mask_t m_active_mask;
+    simt_mask_t m_pending_mask;
     address_type m_recvg_pc;
+    int m_rtid;
     unsigned long long m_branch_div_cycle;
     stack_entry_type m_type;
     simt_stack_entry()
         : m_pc(-1),
           m_calldepth(0),
           m_active_mask(),
+          m_pending_mask(),
           m_recvg_pc(-1),
+          m_rtid(-1),
           m_branch_div_cycle(0),
           m_type(STACK_ENTRY_TYPE_NORMAL){};
   };
 
   std::deque<simt_stack_entry> m_stack;
+  std::vector<simt_stack_entry> m_rt_stack;
 
   class gpgpu_sim *m_gpu;
 };

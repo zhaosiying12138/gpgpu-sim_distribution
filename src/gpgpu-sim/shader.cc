@@ -544,6 +544,15 @@ void shader_core_ctx::init_warps(unsigned cta_id, unsigned start_thread,
   }
 }
 
+int shader_core_ctx::find_idle_warp() {
+  for (int i = 0; i < m_config->max_warps_per_shader; i++) {
+    if (m_warp[i]->done_exit()) {
+      return i;
+    }
+  }
+  return -1;
+}
+
 // return the next pc of a thread
 address_type shader_core_ctx::next_pc(int tid) const {
   if (tid == -1) return -1;

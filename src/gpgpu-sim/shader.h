@@ -2145,6 +2145,7 @@ class shader_core_ctx : public core_t {
   virtual void init_warps(unsigned cta_id, unsigned start_thread,
                           unsigned end_thread, unsigned ctaid, int cta_size,
                           kernel_info_t &kernel);
+  virtual int find_idle_warp();
   virtual void checkExecutionStatusAndUpdate(warp_inst_t &inst, unsigned t,
                                              unsigned tid) = 0;
   virtual void func_exec_inst(warp_inst_t &inst) = 0;
