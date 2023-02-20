@@ -399,7 +399,7 @@ typedef std::vector<address_type> addr_vector_t;
 
 class simt_stack {
  public:
-  simt_stack(unsigned wid, unsigned warpSize, class gpgpu_sim *gpu);
+  simt_stack(unsigned wid, unsigned warpSize, class gpgpu_sim *gpu, class shader_core_ctx *shader);
 
   void reset();
   void launch(address_type start_pc, const simt_mask_t &active_mask);
@@ -416,10 +416,12 @@ class simt_stack {
 
  protected:
   unsigned m_warp_id;
+  unsigned m_original_wid;
   unsigned m_warp_size;
 
   enum stack_entry_type { STACK_ENTRY_TYPE_NORMAL = 0, STACK_ENTRY_TYPE_CALL };
 
+ public:
   struct simt_stack_entry {
     address_type m_pc;
     unsigned int m_calldepth;
@@ -439,10 +441,12 @@ class simt_stack {
           m_branch_div_cycle(0),
           m_type(STACK_ENTRY_TYPE_NORMAL){};
   };
-
+  void launch(unsigned original_wid, simt_stack_entry new_stack_entry);
   std::deque<simt_stack_entry> m_stack;
   std::vector<simt_stack_entry> m_rt_stack;
 
+ protected:
+  shader_core_ctx *m_shader;
   class gpgpu_sim *m_gpu;
 };
 
@@ -1026,7 +1030,7 @@ class warp_inst_t : public inst_t {
   void clear() { m_empty = true; }
 
   void issue(const active_mask_t &mask, unsigned warp_id,
-             unsigned long long cycle, int dynamic_warp_id, int sch_id);
+             unsigned long long cycle, int dynamic_warp_id, unsigned original_wid, int sch_id);
 
   const active_mask_t &get_active_mask() const { return m_warp_active_mask; }
   void completed(unsigned long long cycle)
@@ -1119,6 +1123,10 @@ class warp_inst_t : public inst_t {
     assert(!m_empty);
     return m_warp_id;
   }
+  unsigned original_wid() const
+  {
+    return m_original_wid;
+  }
   unsigned warp_id_func() const  // to be used in functional simulations only
   {
     return m_warp_id;
@@ -1167,6 +1175,7 @@ class warp_inst_t : public inst_t {
   bool should_do_atomic;
   bool m_is_printf;
   unsigned m_warp_id;
+  unsigned m_original_wid;
   unsigned m_dynamic_warp_id;
   const core_config *m_config;
   active_mask_t m_warp_active_mask;  // dynamic active mask for timing model
@@ -1276,11 +1285,11 @@ class core_t {
   unsigned get_reduction_value(unsigned ctaid, unsigned barid) {
     return reduction_storage[ctaid][barid];
   }
+  simt_stack **m_simt_stack;  // pdom based reconvergence context for each warp
 
  protected:
   class gpgpu_sim *m_gpu;
   kernel_info_t *m_kernel;
-  simt_stack **m_simt_stack;  // pdom based reconvergence context for each warp
   class ptx_thread_info **m_thread;
   unsigned m_warp_size;
   unsigned m_warp_count;

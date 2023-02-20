@@ -536,7 +536,7 @@ void shader_core_ctx::init_warps(unsigned cta_id, unsigned start_thread,
         start_pc = pc;
       }
 
-      m_warp[i]->init(start_pc, cta_id, i, active_threads, m_dynamic_warp_id);
+      m_warp[i]->init(start_pc, cta_id, i, active_threads, i, m_dynamic_warp_id);
       ++m_dynamic_warp_id;
       m_not_completed += n_active;
       ++m_active_warps;
@@ -551,6 +551,17 @@ int shader_core_ctx::find_idle_warp() {
     }
   }
   return -1;
+}
+
+int shader_core_ctx::split_warp(int src_wid, simt_stack::simt_stack_entry entry) {
+  int new_wid = find_idle_warp();
+  assert(new_wid != -1);
+  m_warp[new_wid]->init(entry.m_pc, m_warp[src_wid]->get_cta_id(), new_wid, entry.m_active_mask, src_wid, m_dynamic_warp_id);
+  assert(entry.m_active_mask.any());
+  m_simt_stack[new_wid]->launch(src_wid, entry);
+  m_warp[src_wid]->m_active_threads &= ~(entry.m_active_mask);
+  ++m_dynamic_warp_id;
+  ++m_active_warps;
 }
 
 // return the next pc of a thread
@@ -915,28 +926,38 @@ void shader_core_ctx::fetch() {
 
         // this code checks if this warp has finished executing and can be
         // reclaimed
+        if (warp_id == 1 && m_warp[1]->functional_done()==1 && m_warp[1]->stores_done()==1 && m_warp[1]->num_inst_in_pipeline()==1)
+          printf("[ZSY] okasiina...\n");
         if (m_warp[warp_id]->hardware_done() &&
             !m_scoreboard->pendingWrites(warp_id) &&
             !m_warp[warp_id]->done_exit()) {
           bool did_exit = false;
-          for (unsigned t = 0; t < m_config->warp_size; t++) {
-            unsigned tid = warp_id * m_config->warp_size + t;
-            if (m_threadState[tid].m_active == true) {
-              m_threadState[tid].m_active = false;
-              unsigned cta_id = m_warp[warp_id]->get_cta_id();
-              if (m_thread[tid] == NULL) {
-                register_cta_thread_exit(cta_id, m_kernel);
-              } else {
-                register_cta_thread_exit(cta_id,
-                                         &(m_thread[tid]->get_kernel()));
+          if (m_warp[warp_id]->get_original_wid() == m_warp[warp_id]->get_warp_id()) {
+            for (unsigned t = 0; t < m_config->warp_size; t++) {
+              unsigned tid = warp_id * m_config->warp_size + t;
+              if (m_threadState[tid].m_active == true) {
+                m_threadState[tid].m_active = false;
+                unsigned cta_id = m_warp[warp_id]->get_cta_id();
+                if (m_thread[tid] == NULL) {
+                  register_cta_thread_exit(cta_id, m_kernel);
+                } else {
+                  register_cta_thread_exit(cta_id,
+                                          &(m_thread[tid]->get_kernel()));
+                }
+                m_not_completed -= 1;
+                m_active_threads.reset(tid);
+                did_exit = true;
               }
-              m_not_completed -= 1;
-              m_active_threads.reset(tid);
-              did_exit = true;
             }
+          } else {
+            did_exit = true;
+          }         
+          if (did_exit) {
+            m_warp[warp_id]->set_done_exit();
+            printf("[ZSY] warp %d really exit at fetch()\n", warp_id);
           }
-          if (did_exit) m_warp[warp_id]->set_done_exit();
           --m_active_warps;
+          printf("[ZSY] warp %d exit, active_warps = %d\n", warp_id, m_active_warps);
           assert(m_active_warps >= 0);
         }
 
@@ -993,7 +1014,7 @@ void shader_core_ctx::fetch() {
 }
 
 void exec_shader_core_ctx::func_exec_inst(warp_inst_t &inst) {
-  execute_warp_inst_t(inst);
+  execute_warp_inst_t(inst, inst.original_wid()); //!!!ZSY_DEBUG
   if (inst.is_load() || inst.is_store()) {
     inst.generate_mem_accesses();
     // inst.print_m_accessq();
@@ -1014,6 +1035,7 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
   (*pipe_reg)->issue(active_mask, warp_id,
                      m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,
                      m_warp[warp_id]->get_dynamic_warp_id(),
+                     m_warp[warp_id]->get_original_wid(),
                      sch_id);  // dynamic instruction information
   m_stats->shader_cycle_distro[2 + (*pipe_reg)->active_count()]++;
   func_exec_inst(**pipe_reg);
@@ -1135,7 +1157,7 @@ void scheduler_unit::order_by_priority(
     abort();
   }
 }
-
+#define SCHED_DPRINTF printf
 void scheduler_unit::cycle() {
   SCHED_DPRINTF("scheduler_unit::cycle()\n");
   bool valid_inst =
@@ -1169,7 +1191,7 @@ void scheduler_unit::cycle() {
 
     if (warp(warp_id).ibuffer_empty())
       SCHED_DPRINTF(
-          "Warp (warp_id %u, dynamic_warp_id %u) fails as ibuffer_empty\n",
+          "Warp (warp_id %u, dynamic_warp_id %u)  ibuffer_empty\n",
           (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
 
     if (warp(warp_id).waiting())
@@ -1177,6 +1199,11 @@ void scheduler_unit::cycle() {
           "Warp (warp_id %u, dynamic_warp_id %u) fails as waiting for "
           "barrier\n",
           (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
+
+    //if (warp(warp_id).hardware_done()) {
+    //  warp(warp_id).set_done_exit();
+    //  printf("[ZSY] set warp(%d) hardware done at cycle %d\n", warp_id, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+    //}
 
     while (!warp(warp_id).waiting() && !warp(warp_id).ibuffer_empty() &&
            (checked < max_issue) && (checked <= issued) &&
@@ -1193,6 +1220,10 @@ void scheduler_unit::cycle() {
       bool warp_inst_issued = false;
       unsigned pc, rpc;
       m_shader->get_pdom_stack_top_info(warp_id, pI, &pc, &rpc);
+      if (pc == -2) {
+        printf("warp %d stalled at ipdom at cycles %d\n", warp_id, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+        return;
+      }
       SCHED_DPRINTF(
           "Warp (warp_id %u, dynamic_warp_id %u) has valid instruction (%s)\n",
           (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id(),
@@ -3030,6 +3061,7 @@ void shader_core_ctx::display_simt_state(FILE *fout, int mask) const {
   if ((mask & 4) && m_config->model == POST_DOMINATOR) {
     fprintf(fout, "per warp SIMT control-flow state:\n");
     unsigned n = m_config->n_thread_per_shader / m_config->warp_size;
+    n = 2; //!!!ZSY_DEBUG
     for (unsigned i = 0; i < n; i++) {
       unsigned nactive = 0;
       for (unsigned j = 0; j < m_config->warp_size; j++) {
@@ -3044,7 +3076,7 @@ void shader_core_ctx::display_simt_state(FILE *fout, int mask) const {
         }
       }
       if (nactive == 0) {
-        continue;
+        //continue;
       }
       m_simt_stack[i]->print(fout);
     }
@@ -3127,7 +3159,7 @@ void shader_core_ctx::display_pipeline(FILE *fout, int print_mem,
 
   dump_warp_state(fout);
   fprintf(fout, "\n");
-
+#if 0
   m_L1I->display_state(fout);
 
   fprintf(fout, "IF/ID       = ");
@@ -3143,7 +3175,9 @@ void shader_core_ctx::display_pipeline(FILE *fout, int print_mem,
     if (!m_warp[i]->ibuffer_empty()) m_warp[i]->print_ibuffer(fout);
   }
   fprintf(fout, "\n");
+#endif
   display_simt_state(fout, mask);
+#if 0
   fprintf(fout, "-------------------------- Scoreboard\n");
   m_scoreboard->printContents();
   /*
@@ -3204,6 +3238,7 @@ void shader_core_ctx::display_pipeline(FILE *fout, int print_mem,
       }
     }
   }
+#endif
 }
 
 unsigned int shader_core_config::max_cta(const kernel_info_t &k) const {
@@ -3738,6 +3773,9 @@ void shader_core_ctx::store_ack(class mem_fetch *mf) {
          (m_config->gpgpu_perfect_mem && mf->get_is_write()));
   unsigned warp_id = mf->get_wid();
   m_warp[warp_id]->dec_store_req();
+  if (warp_id == 0 && m_warp[warp_id]->stores_done()) {
+    printf("[ZSY] why dont dec inst in pipeline\n");
+  }
 }
 
 void shader_core_ctx::print_cache_stats(FILE *fp, unsigned &dl1_accesses,
@@ -3775,6 +3813,9 @@ bool shd_warp_t::functional_done() const {
 }
 
 bool shd_warp_t::hardware_done() const {
+ // if (m_warp_id == 1) {
+    printf("[ZSY] warp %d hardware_done check, %d, %d, %d\n", m_warp_id, functional_done(), stores_done(), num_inst_in_pipeline());
+ // }
   return functional_done() && stores_done() && !inst_in_pipeline();
 }
 
@@ -4367,8 +4408,8 @@ void simt_core_cluster::get_pdom_stack_top_info(unsigned sid, unsigned tid,
 void simt_core_cluster::display_pipeline(unsigned sid, FILE *fout,
                                          int print_mem, int mask) {
   m_core[m_config->sid_to_cid(sid)]->display_pipeline(fout, print_mem, mask);
-
   fprintf(fout, "\n");
+#if 0
   fprintf(fout, "Cluster %u pipeline state\n", m_cluster_id);
   fprintf(fout, "Response FIFO (occupancy = %zu):\n", m_response_fifo.size());
   for (std::list<mem_fetch *>::const_iterator i = m_response_fifo.begin();
@@ -4376,6 +4417,7 @@ void simt_core_cluster::display_pipeline(unsigned sid, FILE *fout,
     const mem_fetch *mf = *i;
     mf->print(fout);
   }
+#endif
 }
 
 void simt_core_cluster::print_cache_stats(FILE *fp, unsigned &dl1_accesses,

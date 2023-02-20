@@ -48,12 +48,13 @@ void mem_access_t::init(gpgpu_context *ctx) {
 }
 void warp_inst_t::issue(const active_mask_t &mask, unsigned warp_id,
                         unsigned long long cycle, int dynamic_warp_id,
-                        int sch_id) {
+                        unsigned original_wid, int sch_id) {
   m_warp_active_mask = mask;
   m_warp_issued_mask = mask;
   m_uid = ++(m_config->gpgpu_ctx->warp_inst_sm_next_uid);
   m_warp_id = warp_id;
   m_dynamic_warp_id = dynamic_warp_id;
+  m_original_wid = original_wid;
   issue_cycle = cycle;
   cycles = initiation_interval;
   m_cache_hit = false;
@@ -914,10 +915,11 @@ void kernel_info_t::destroy_cta_streams() {
   m_cta_streams.clear();
 }
 
-simt_stack::simt_stack(unsigned wid, unsigned warpSize, class gpgpu_sim *gpu) {
+simt_stack::simt_stack(unsigned wid, unsigned warpSize, class gpgpu_sim *gpu, shader_core_ctx *shader) {
   m_warp_id = wid;
   m_warp_size = warpSize;
   m_gpu = gpu;
+  m_shader = shader;
   reset();
 }
 
@@ -928,11 +930,18 @@ void simt_stack::reset() {
 
 void simt_stack::launch(address_type start_pc, const simt_mask_t &active_mask) {
   reset();
+  m_original_wid = m_warp_id;
   simt_stack_entry new_stack_entry;
   new_stack_entry.m_pc = start_pc;
   new_stack_entry.m_calldepth = 1;
   new_stack_entry.m_active_mask = active_mask;
   new_stack_entry.m_type = STACK_ENTRY_TYPE_NORMAL;
+  m_stack.push_back(new_stack_entry);
+}
+
+void simt_stack::launch(unsigned original_wid, simt_stack_entry new_stack_entry) {
+  reset();
+  m_original_wid = original_wid;
   m_stack.push_back(new_stack_entry);
 }
 
@@ -980,7 +989,12 @@ const simt_mask_t &simt_stack::get_active_mask() const {
 }
 
 void simt_stack::get_pdom_stack_top_info(unsigned *pc, unsigned *rpc) const {
-  assert(m_stack.size() > 0);
+//  assert(m_stack.size() > 0);
+  if (m_stack.size() == 0) {
+    *pc = -2;
+    *rpc = -2;
+    return;
+  }
   *pc = m_stack.back().m_pc;
   *rpc = m_stack.back().m_recvg_pc;
 }
@@ -1036,7 +1050,18 @@ void simt_stack::print_checkpoint(FILE *fout) const {
 void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
                         address_type recvg_pc, op_type next_inst_op,
                         unsigned next_inst_size, address_type next_inst_pc) {
-  assert(m_stack.size() > 0);
+  if (m_warp_id == 1) {
+    printf("[ZSY] before update simt stack\n");
+    print(stdout);
+    //GPGPU_Context()->the_gpgpusim->g_the_gpu->dump_pipeline((0x40|0x4|0x1), 0, 0);
+  }
+//  assert(m_stack.size() > 0);
+  if (m_stack.size() == 0) {
+    printf("[ZSY] warp(%d) wait at cycle %d because of waiting at IPDOM.", m_warp_id, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+    return;
+  }
+
+  printf("[ZSY] warp 0 active threads 8 is [%d]\n", m_shader->m_warp[0]->m_active_threads.test(8));
 
   assert(next_pc.size() == m_warp_size);
 
@@ -1047,6 +1072,8 @@ void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
   stack_entry_type top_type = m_stack.back().m_type;
   assert(top_pc == next_inst_pc);
   assert(top_active_mask.any());
+  if (top_pc == 0x1d8)
+    printf("[ZSY] we fetch the ret instruction.\n");
 
   const address_type null_pc = -1;
   bool warp_diverged = false;
@@ -1082,6 +1109,8 @@ void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
     divergent_paths[tmp_next_pc] = tmp_active_mask;
     num_divergent_paths++;
   }
+  printf("[ZSY] warp_id = %d, num_divergent_paths = %d\n", m_warp_id, num_divergent_paths);
+  assert(m_original_wid >= 0);
 
   address_type not_taken_pc = next_inst_pc + next_inst_size;
   assert(num_divergent_paths <= 2);
@@ -1133,25 +1162,52 @@ void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
       return;
     }
 
+    auto& rt_stack = m_shader->m_simt_stack[m_original_wid]->m_rt_stack;
     // discard the new entry if its PC matches with reconvergence PC
     // that automatically reconverges the entry
     // If the top stack entry is CALL, dont reconverge.
     if (tmp_next_pc == top_recvg_pc && (top_type != STACK_ENTRY_TYPE_CALL)) {
       int rtid = m_stack.back().m_rtid;
+      assert(m_original_wid >= 0);
       simt_mask_t msk = m_stack.back().m_active_mask;
-      m_rt_stack[rtid].m_pending_mask &= ~msk;
+      auto& st_stack = m_shader->m_simt_stack[m_original_wid]->m_stack;
+      //!!ZSY_DEBUG:TODO:atomic bitset!!
+      rt_stack[rtid].m_pending_mask &= ~msk;
       m_stack.pop_back();
-      if (!m_rt_stack[rtid].m_pending_mask.any()) {
+      printf("[ZSY] warp split(%d) exit\n", m_warp_id);
+      GPGPU_Context()->the_gpgpusim->g_the_gpu->dump_pipeline((0x40|0x4|0x1), 0, 0);
+      if (m_warp_id != m_original_wid) { // destroy this tmp warp split
+        //!!ZSY_DEBUG:m_thread is done??
+        //assert(m_shader->m_warp[m_warp_id]->hardware_done());
+        //printf("[ZSY] warp(%d) hardware done at cycle %d\n", m_warp_id, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+        //m_shader->m_warp[m_warp_id]->set_done_exit();
+        for (int i = 0; i < 32; i++) {
+          if (msk.test(i)) {
+            m_shader->m_warp[m_warp_id]->set_completed(i);
+          }
+        }
+        m_shader->m_warp[m_warp_id]->set_imiss_pending();
+        m_shader->m_warp[m_warp_id]->ibuffer_flush();
+        
+      }
+      if (!rt_stack[rtid].m_pending_mask.any()) {
         printf("[ZSY] pending mask is zero!\n");
-        m_stack.push_back(simt_stack_entry());
-        m_stack.back().m_active_mask = m_rt_stack.back().m_active_mask;
-        m_stack.back().m_branch_div_cycle = m_rt_stack.back().m_branch_div_cycle;
-        m_stack.back().m_calldepth = m_rt_stack.back().m_calldepth;
-        m_stack.back().m_pc = m_rt_stack.back().m_pc;
-        m_stack.back().m_recvg_pc = m_rt_stack.back().m_recvg_pc;
-        m_stack.back().m_rtid = m_rt_stack.back().m_rtid;
-        m_stack.back().m_type = m_rt_stack.back().m_type;
-        m_rt_stack.pop_back();
+        
+
+
+
+
+        st_stack.push_back(simt_stack_entry());
+        st_stack.back().m_active_mask = rt_stack.back().m_active_mask;
+        st_stack.back().m_branch_div_cycle = rt_stack.back().m_branch_div_cycle;
+        st_stack.back().m_calldepth = rt_stack.back().m_calldepth;
+        st_stack.back().m_pc = rt_stack.back().m_pc;
+        st_stack.back().m_recvg_pc = rt_stack.back().m_recvg_pc;
+        st_stack.back().m_rtid = rt_stack.back().m_rtid;
+        st_stack.back().m_type = rt_stack.back().m_type;
+        rt_stack.pop_back();
+        m_shader->m_warp[m_original_wid]->m_active_threads = st_stack.back().m_active_mask; //reset the active mask
+
       }
       return;
     }
@@ -1159,21 +1215,23 @@ void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
     // this new entry is not converging
     // if this entry does not include thread from the warp, divergence occurs
     if ((num_divergent_paths > 1) && !warp_diverged) {
+      printf("[ZSY] before warp split:\n");
+      GPGPU_Context()->the_gpgpusim->g_the_gpu->dump_pipeline((0x40|0x4|0x1), 0, 0);
       warp_diverged = true;
       // modify the existing top entry into a reconvergence entry in the pdom
       // stack
       new_recvg_pc = recvg_pc;
       if (new_recvg_pc != top_recvg_pc) {
-        m_rt_stack.push_back(simt_stack_entry());
-        m_rt_stack.back().m_active_mask = m_stack.back().m_active_mask;
-        m_rt_stack.back().m_pending_mask = m_stack.back().m_active_mask;
-        m_rt_stack.back().m_branch_div_cycle =
+        rt_stack.push_back(simt_stack_entry());
+        rt_stack.back().m_active_mask = m_stack.back().m_active_mask;
+        rt_stack.back().m_pending_mask = m_stack.back().m_active_mask;
+        rt_stack.back().m_branch_div_cycle =
             m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
-        m_rt_stack.back().m_calldepth = m_stack.back().m_calldepth;
-        m_rt_stack.back().m_pc = new_recvg_pc;
-        m_rt_stack.back().m_recvg_pc = m_stack.back().m_recvg_pc;
-        m_rt_stack.back().m_rtid = m_stack.back().m_rtid;
-        m_rt_stack.back().m_type = m_stack.back().m_type;
+        rt_stack.back().m_calldepth = m_stack.back().m_calldepth;
+        rt_stack.back().m_pc = new_recvg_pc;
+        rt_stack.back().m_recvg_pc = m_stack.back().m_recvg_pc;
+        rt_stack.back().m_rtid = m_stack.back().m_rtid;
+        rt_stack.back().m_type = m_stack.back().m_type;
 
         m_stack.pop_back();
         m_stack.push_back(simt_stack_entry());
@@ -1189,11 +1247,17 @@ void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
     if (warp_diverged) {
       m_stack.back().m_calldepth = 0;
       m_stack.back().m_recvg_pc = new_recvg_pc;
-      m_stack.back().m_rtid = m_rt_stack.size() - 1;
+      m_stack.back().m_rtid = rt_stack.size() - 1;
     } else {
       m_stack.back().m_recvg_pc = top_recvg_pc;
     }
 
+    if (i == 1) {
+      m_shader->split_warp(m_original_wid, m_stack.back()); //!!!ZSY_DEBUG
+      m_stack.pop_back();
+      printf("[ZSY] after warp split:\n");
+      GPGPU_Context()->the_gpgpusim->g_the_gpu->dump_pipeline((0x40|0x4|0x1), 0, 0);
+    }
     m_stack.push_back(simt_stack_entry());
   }
   assert(m_stack.size() > 0);
@@ -1202,6 +1266,7 @@ void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
   if (warp_diverged) {
     m_gpu->gpgpu_ctx->stats->ptx_file_line_stats_add_warp_divergence(top_pc, 1);
   }
+
 }
 
 void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
@@ -1225,7 +1290,7 @@ bool core_t::ptx_thread_done(unsigned hw_thread_id) const {
 void core_t::updateSIMTStack(unsigned warpId, warp_inst_t *inst) {
   simt_mask_t thread_done;
   addr_vector_t next_pc;
-  unsigned wtid = warpId * m_warp_size;
+  unsigned wtid = inst->original_wid() * m_warp_size;
   for (unsigned i = 0; i < m_warp_size; i++) {
     if (ptx_thread_done(wtid + i)) {
       thread_done.set(i);
@@ -1260,7 +1325,7 @@ void core_t::deleteSIMTStack() {
 void core_t::initilizeSIMTStack(unsigned warp_count, unsigned warp_size) {
   m_simt_stack = new simt_stack *[warp_count];
   for (unsigned i = 0; i < warp_count; ++i)
-    m_simt_stack[i] = new simt_stack(i, warp_size, m_gpu);
+    m_simt_stack[i] = new simt_stack(i, warp_size, m_gpu, (shader_core_ctx *)this);
   m_warp_size = warp_size;
   m_warp_count = warp_count;
 }

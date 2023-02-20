@@ -107,9 +107,12 @@ class shd_warp_t {
   }
   void reset() {
     assert(m_stores_outstanding == 0);
-    assert(m_inst_in_pipeline == 0);
+    if (m_inst_in_pipeline > 0)
+      printf("Not possible\n");
+    assert(m_inst_in_pipeline == 0); //ZSY_DEBUG_BUGGY!!!
     m_imiss_pending = false;
     m_warp_id = (unsigned)-1;
+    m_original_wid = (unsigned)-1;
     m_dynamic_warp_id = (unsigned)-1;
     n_completed = m_warp_size;
     m_n_atomic = 0;
@@ -124,9 +127,10 @@ class shd_warp_t {
   }
   void init(address_type start_pc, unsigned cta_id, unsigned wid,
             const std::bitset<MAX_WARP_SIZE> &active,
-            unsigned dynamic_warp_id) {
+            unsigned original_wid, unsigned dynamic_warp_id) {
     m_cta_id = cta_id;
     m_warp_id = wid;
+    m_original_wid = original_wid;
     m_dynamic_warp_id = dynamic_warp_id;
     m_next_pc = start_pc;
     assert(n_completed >= active.count());
@@ -227,16 +231,21 @@ class shd_warp_t {
     return (num_inst_in_pipeline() - num_inst_in_buffer());
   }
   bool inst_in_pipeline() const { return m_inst_in_pipeline > 0; }
-  void inc_inst_in_pipeline() { m_inst_in_pipeline++; }
+  void inc_inst_in_pipeline() {
+    m_inst_in_pipeline++;
+    printf("[ZSY] inc_inst_in_pipeline(), warp = %d, cnt = %d\n", m_warp_id, m_inst_in_pipeline);
+  }
   void dec_inst_in_pipeline() {
     assert(m_inst_in_pipeline > 0);
     m_inst_in_pipeline--;
+    printf("[ZSY] dec_inst_in_pipeline(), warp = %d, cnt = %d\n", m_warp_id, m_inst_in_pipeline);
   }
 
   unsigned get_cta_id() const { return m_cta_id; }
 
   unsigned get_dynamic_warp_id() const { return m_dynamic_warp_id; }
   unsigned get_warp_id() const { return m_warp_id; }
+  unsigned get_original_wid() const { return m_original_wid; }
 
   class shader_core_ctx * get_shader() { return m_shader; }
  private:
@@ -244,13 +253,17 @@ class shd_warp_t {
   class shader_core_ctx *m_shader;
   unsigned m_cta_id;
   unsigned m_warp_id;
+  unsigned m_original_wid;
   unsigned m_warp_size;
   unsigned m_dynamic_warp_id;
 
   address_type m_next_pc;
   unsigned n_completed;  // number of threads in warp completed
+
+ public:
   std::bitset<MAX_WARP_SIZE> m_active_threads;
 
+ private:
   bool m_imiss_pending;
 
   struct ibuffer_entry {
@@ -1882,6 +1895,8 @@ class shader_core_ctx : public core_t {
 
   // used by simt_core_cluster:
   // modifiers
+  int find_idle_warp();
+  int split_warp(int src_wid, simt_stack::simt_stack_entry entry);
   void cycle();
   void reinit(unsigned start_thread, unsigned end_thread,
               bool reset_not_completed);
@@ -2145,7 +2160,6 @@ class shader_core_ctx : public core_t {
   virtual void init_warps(unsigned cta_id, unsigned start_thread,
                           unsigned end_thread, unsigned ctaid, int cta_size,
                           kernel_info_t &kernel);
-  virtual int find_idle_warp();
   virtual void checkExecutionStatusAndUpdate(warp_inst_t &inst, unsigned t,
                                              unsigned tid) = 0;
   virtual void func_exec_inst(warp_inst_t &inst) = 0;
@@ -2214,8 +2228,11 @@ class shader_core_ctx : public core_t {
   read_only_cache *m_L1I;  // instruction cache
   int m_last_warp_fetched;
 
+ public:
   // decode/dispatch
   std::vector<shd_warp_t *> m_warp;  // per warp information array
+
+ protected:
   barrier_set_t m_barriers;
   ifetch_buffer_t m_inst_fetch_buffer;
   std::vector<register_set> m_pipeline_reg;
