@@ -3061,7 +3061,6 @@ void shader_core_ctx::display_simt_state(FILE *fout, int mask) const {
   if ((mask & 4) && m_config->model == POST_DOMINATOR) {
     fprintf(fout, "per warp SIMT control-flow state:\n");
     unsigned n = m_config->n_thread_per_shader / m_config->warp_size;
-    n = 2; //!!!ZSY_DEBUG
     for (unsigned i = 0; i < n; i++) {
       unsigned nactive = 0;
       for (unsigned j = 0; j < m_config->warp_size; j++) {
@@ -3076,7 +3075,7 @@ void shader_core_ctx::display_simt_state(FILE *fout, int mask) const {
         }
       }
       if (nactive == 0) {
-        //continue;
+        continue;
       }
       m_simt_stack[i]->print(fout);
     }
@@ -3176,7 +3175,7 @@ void shader_core_ctx::display_pipeline(FILE *fout, int print_mem,
 
   dump_warp_state(fout);
   fprintf(fout, "\n");
-#if 0
+
   m_L1I->display_state(fout);
 
   fprintf(fout, "IF/ID       = ");
@@ -3192,9 +3191,7 @@ void shader_core_ctx::display_pipeline(FILE *fout, int print_mem,
     if (!m_warp[i]->ibuffer_empty()) m_warp[i]->print_ibuffer(fout);
   }
   fprintf(fout, "\n");
-#endif
   display_simt_state(fout, mask);
-#if 0
   fprintf(fout, "-------------------------- Scoreboard\n");
   m_scoreboard->printContents();
   /*
@@ -3255,7 +3252,6 @@ void shader_core_ctx::display_pipeline(FILE *fout, int print_mem,
       }
     }
   }
-#endif
 }
 
 unsigned int shader_core_config::max_cta(const kernel_info_t &k) const {
@@ -4419,8 +4415,8 @@ void simt_core_cluster::get_pdom_stack_top_info(unsigned sid, unsigned tid,
 void simt_core_cluster::display_pipeline(unsigned sid, FILE *fout,
                                          int print_mem, int mask) {
   m_core[m_config->sid_to_cid(sid)]->display_pipeline(fout, print_mem, mask);
+
   fprintf(fout, "\n");
-#if 0
   fprintf(fout, "Cluster %u pipeline state\n", m_cluster_id);
   fprintf(fout, "Response FIFO (occupancy = %zu):\n", m_response_fifo.size());
   for (std::list<mem_fetch *>::const_iterator i = m_response_fifo.begin();
@@ -4428,7 +4424,6 @@ void simt_core_cluster::display_pipeline(unsigned sid, FILE *fout,
     const mem_fetch *mf = *i;
     mf->print(fout);
   }
-#endif
 }
 
 void simt_core_cluster::print_cache_stats(FILE *fp, unsigned &dl1_accesses,
