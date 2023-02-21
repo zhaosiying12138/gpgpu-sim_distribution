@@ -915,6 +915,9 @@ void shader_core_ctx::fetch() {
                                     // were expecting.
       m_inst_fetch_buffer.m_valid = true;
       m_warp[mf->get_wid()]->set_last_fetch(m_gpu->gpu_sim_cycle);
+      unsigned warp_id = mf->get_wid();
+      printf("[ZSY][FETCH] warp %d (original_warp_id = %d) get hit response(pc = 0x%x) at cycle %d\n",
+              warp_id, m_warp[warp_id]->get_original_wid(), m_warp[warp_id]->get_pc(), GPGPU_Context()->clock());
       delete mf;
     } else {
       // find an active warp with space in instruction buffer that is not
@@ -952,7 +955,8 @@ void shader_core_ctx::fetch() {
           }         
           if (did_exit) {
             m_warp[warp_id]->set_done_exit();
-            printf("[ZSY] warp %d really exit at fetch()\n", warp_id);
+            printf("[ZSY][FETCH] warp %d (original_warp_id = %d) hardware_done at cycle %d\n",
+              warp_id, m_warp[warp_id]->get_original_wid(), GPGPU_Context()->clock());
           }
           --m_active_warps;
           assert(m_active_warps >= 0);
@@ -991,11 +995,15 @@ void shader_core_ctx::fetch() {
             m_last_warp_fetched = warp_id;
             m_warp[warp_id]->set_imiss_pending();
             m_warp[warp_id]->set_last_fetch(m_gpu->gpu_sim_cycle);
+            printf("[ZSY][FETCH] warp %d (original_warp_id = %d) fetch instructions(pc = 0x%x) at cycle %d but miss\n",
+              warp_id, m_warp[warp_id]->get_original_wid(), pc, GPGPU_Context()->clock());
           } else if (status == HIT) {
             m_last_warp_fetched = warp_id;
             m_inst_fetch_buffer = ifetch_buffer_t(pc, nbytes, warp_id);
             m_warp[warp_id]->set_last_fetch(m_gpu->gpu_sim_cycle);
             delete mf;
+            printf("[ZSY][FETCH] warp %d (original_warp_id = %d) fetch instructions(pc = 0x%x) at cycle %d and hit\n",
+              warp_id, m_warp[warp_id]->get_original_wid(), pc, GPGPU_Context()->clock());
           } else {
             m_last_warp_fetched = warp_id;
             assert(status == RESERVATION_FAIL);
@@ -1154,7 +1162,7 @@ void scheduler_unit::order_by_priority(
     abort();
   }
 }
-#define SCHED_DPRINTF
+//#define SCHED_DPRINTF printf
 void scheduler_unit::cycle() {
   SCHED_DPRINTF("scheduler_unit::cycle()\n");
   bool valid_inst =
@@ -1213,7 +1221,7 @@ void scheduler_unit::cycle() {
       unsigned pc, rpc;
       m_shader->get_pdom_stack_top_info(warp_id, pI, &pc, &rpc);
       if (pc == -2) {
-        printf("warp %d stalled at reconvergence pc at cycles %d\n", warp_id, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+        printf("[ZSY][SCHED] warp %d stalled at reconvergence pc at cycles %d\n", warp_id, GPGPU_Context()->clock());
         return;
       }
       SCHED_DPRINTF(
@@ -3073,6 +3081,23 @@ void shader_core_ctx::display_simt_state(FILE *fout, int mask) const {
       m_simt_stack[i]->print(fout);
     }
     fprintf(fout, "\n");
+  }
+}
+
+void shader_core_ctx::display_st_rt() const {
+  printf("Splits Table(ST) of SM_id(%02d):\n", get_sid());
+  for (int i = 0; i < m_config->max_warps_per_shader; i++) {
+    if (m_warp[i] != nullptr && !m_warp[i]->done_exit()) {
+      m_simt_stack[i]->print_st();
+    }
+  }
+  printf("\n");
+  for (int i = 0; i < m_config->max_warps_per_shader; i++) {
+    if (m_warp[i] != nullptr && !m_warp[i]->done_exit() && m_warp[i]->get_original_wid() == i) {
+      printf("Reconvergence Table(RT) of SM_id(%02d) Warp_id(%02d):\n", get_sid(), i);
+      m_simt_stack[i]->print_rt();
+      printf("\n");
+    }
   }
 }
 

@@ -1034,6 +1034,64 @@ void simt_stack::print(FILE *fout) const {
   }
 }
 
+void simt_stack::print_st() const {
+  printf("warp_id: %02d, original_wid: %02d, parent_wid: %02d, ", m_warp_id, m_original_wid, 67);
+  if (m_stack.size() == 0) {
+    printf("[N/A]: pending exit\n");
+  } else {
+    assert(m_stack.size() == 1);
+    simt_stack_entry stack_entry = m_stack[0];
+    printf("active_mask: ");
+    for(int i = m_warp_size - 1; i >= 0; i--) {
+      printf("%c", (stack_entry.m_active_mask.test(i) ? '1' : '0'));
+    }
+    printf(", pc: 0x%03x", stack_entry.m_pc);
+    if (stack_entry.m_recvg_pc == (unsigned)-1) {
+      printf(", rpc: -----, tp: %s, cd: %2u ",
+              (stack_entry.m_type == STACK_ENTRY_TYPE_CALL ? "C" : "N"),
+              stack_entry.m_calldepth);
+    } else {
+      printf(", rpc: 0x%03x, tp: %s, cd: %2u ", stack_entry.m_recvg_pc,
+              (stack_entry.m_type == STACK_ENTRY_TYPE_CALL ? "C" : "N"),
+              stack_entry.m_calldepth);
+    }
+    m_gpu->gpgpu_ctx->func_sim->ptx_print_insn(stack_entry.m_pc, stdout);
+    printf("\n");
+  }
+}
+
+void simt_stack::print_rt() const {
+  auto& rt_stack = m_shader->m_simt_stack[m_original_wid]->m_rt_stack;
+  if (rt_stack.size() == 0) {
+    printf("[N/A]\n");
+  } else {
+    for (int i = 0; i < rt_stack.size(); i++) {
+      simt_stack_entry stack_entry = rt_stack[i];
+      printf("split_wid: %02d, ", 43);
+      printf("record_mask: ");
+      for (int j = m_warp_size - 1; j >= 0; j--) {
+        printf("%c", (stack_entry.m_active_mask.test(j) ? '1' : '0'));
+      }
+      printf(", pending_mask: ");
+      for (int j = m_warp_size - 1; j >= 0; j--) {
+        printf("%c", (stack_entry.m_pending_mask.test(j) ? '1' : '0'));
+      }
+      printf(", pc: 0x%03x", stack_entry.m_pc);
+      if (stack_entry.m_recvg_pc == (unsigned)-1) {
+        printf(", rpc: -----, tp: %s, cd: %2u ",
+                (stack_entry.m_type == STACK_ENTRY_TYPE_CALL ? "C" : "N"),
+                stack_entry.m_calldepth);
+      } else {
+        printf(", rpc: 0x%03x, tp: %s, cd: %2u ", stack_entry.m_recvg_pc,
+                (stack_entry.m_type == STACK_ENTRY_TYPE_CALL ? "C" : "N"),
+                stack_entry.m_calldepth);
+      }
+      m_gpu->gpgpu_ctx->func_sim->ptx_print_insn(stack_entry.m_pc, stdout);
+      printf("\n");
+    }
+  }
+}
+
 void simt_stack::print_checkpoint(FILE *fout) const {
   for (unsigned k = 0; k < m_stack.size(); k++) {
     simt_stack_entry stack_entry = m_stack[k];
@@ -1153,19 +1211,16 @@ void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
     // that automatically reconverges the entry
     // If the top stack entry is CALL, dont reconverge.
     if (tmp_next_pc == top_recvg_pc && (top_type != STACK_ENTRY_TYPE_CALL)) {
+      printf("[ZSY][SIMT_STACK] before warp %d (original_warp_id = %d) exit from simt stack at cycle %d\n",
+        m_warp_id, m_original_wid, GPGPU_Context()->clock());
+      m_shader->display_st_rt();
       int rtid = m_stack.back().m_rtid;
       simt_mask_t msk = m_stack.back().m_active_mask;
       auto& st_stack = m_shader->m_simt_stack[m_original_wid]->m_stack;
       //!!ZSY_DEBUG:TODO:atomic bitset!!
       rt_stack[rtid].m_pending_mask &= ~msk;
       m_stack.pop_back();
-      printf("[ZSY] warp split(%d) exit\n", m_warp_id);
-      GPGPU_Context()->the_gpgpusim->g_the_gpu->dump_pipeline((0x40|0x4|0x1), 0, 0);
       if (m_warp_id != m_original_wid) { // destroy this tmp warp split
-        //!!ZSY_DEBUG:m_thread is done??
-        //assert(m_shader->m_warp[m_warp_id]->hardware_done());
-        //printf("[ZSY] warp(%d) hardware done at cycle %d\n", m_warp_id, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
-        //m_shader->m_warp[m_warp_id]->set_done_exit();
         for (int i = 0; i < m_warp_size; i++) {
           if (msk.test(i)) {
             m_shader->m_warp[m_warp_id]->set_completed(i);
@@ -1175,7 +1230,7 @@ void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
         m_shader->m_warp[m_warp_id]->ibuffer_flush();
       }
       if (!rt_stack[rtid].m_pending_mask.any()) {
-        printf("[ZSY] pending mask is zero!\n");
+        printf("[ZSY][SIMT_STACK] pending mask of rt_table is set to be zero at cycle %d.\n", GPGPU_Context()->clock());
         st_stack.push_back(simt_stack_entry());
         st_stack.back().m_active_mask = rt_stack.back().m_active_mask;
         st_stack.back().m_branch_div_cycle = rt_stack.back().m_branch_div_cycle;
@@ -1187,14 +1242,18 @@ void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
         rt_stack.pop_back();
         m_shader->m_warp[m_original_wid]->m_active_threads = st_stack.back().m_active_mask; //reset the active mask
       }
+      printf("[ZSY][SIMT_STACK] after warp %d (original_warp_id = %d) exit from simt stack at cycle %d\n",
+        m_warp_id, m_original_wid, GPGPU_Context()->clock());
+      m_shader->display_st_rt();
       return;
     }
 
     // this new entry is not converging
     // if this entry does not include thread from the warp, divergence occurs
     if ((num_divergent_paths > 1) && !warp_diverged) {
-      printf("[ZSY] before warp split:\n");
-      GPGPU_Context()->the_gpgpusim->g_the_gpu->dump_pipeline((0x40|0x4|0x1), 0, 0);
+      printf("[ZSY][SIMT_STACK] before warp %d (original_warp_id = %d) split at cycle %d:\n",
+        m_warp_id, m_original_wid, GPGPU_Context()->clock());
+      m_shader->display_st_rt();
       warp_diverged = true;
       // modify the existing top entry into a reconvergence entry in the pdom
       // stack
@@ -1233,8 +1292,9 @@ void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
     if (i == 1) {
       m_shader->split_warp(m_original_wid, m_stack.back());
       m_stack.pop_back();
-      printf("[ZSY] after warp split:\n");
-      GPGPU_Context()->the_gpgpusim->g_the_gpu->dump_pipeline((0x40|0x4|0x1), 0, 0);
+      printf("[ZSY][SIMT_STACK] after warp %d (original_warp_id = %d) split at cycle %d:\n",
+        m_warp_id, m_original_wid, GPGPU_Context()->clock());
+      m_shader->display_st_rt();
     }
     m_stack.push_back(simt_stack_entry());
   }

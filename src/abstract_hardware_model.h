@@ -411,6 +411,8 @@ class simt_stack {
   void get_pdom_stack_top_info(unsigned *pc, unsigned *rpc) const;
   unsigned get_rp() const;
   void print(FILE *fp) const;
+  void print_st() const;
+  void print_rt() const;
   void resume(char *fname);
   void print_checkpoint(FILE *fout) const;
 

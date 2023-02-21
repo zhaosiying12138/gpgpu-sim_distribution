@@ -1963,6 +1963,7 @@ class shader_core_ctx : public core_t {
 
   // debug:
   void display_simt_state(FILE *fout, int mask) const;
+  void display_st_rt() const;
   void display_pipeline(FILE *fout, int print_mem, int mask3bit) const;
 
   void incload_stat() { m_stats->m_num_loadqueued_insn[m_sid]++; }
