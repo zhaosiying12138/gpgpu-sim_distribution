@@ -107,9 +107,7 @@ class shd_warp_t {
   }
   void reset() {
     assert(m_stores_outstanding == 0);
-    if (m_inst_in_pipeline > 0)
-      printf("Not possible\n");
-    assert(m_inst_in_pipeline == 0); //ZSY_DEBUG_BUGGY!!!
+    assert(m_inst_in_pipeline == 0);
     m_imiss_pending = false;
     m_warp_id = (unsigned)-1;
     m_original_wid = (unsigned)-1;
@@ -231,14 +229,10 @@ class shd_warp_t {
     return (num_inst_in_pipeline() - num_inst_in_buffer());
   }
   bool inst_in_pipeline() const { return m_inst_in_pipeline > 0; }
-  void inc_inst_in_pipeline() {
-    m_inst_in_pipeline++;
-    printf("[ZSY] inc_inst_in_pipeline(), warp = %d, cnt = %d\n", m_warp_id, m_inst_in_pipeline);
-  }
+  void inc_inst_in_pipeline() { m_inst_in_pipeline++; }
   void dec_inst_in_pipeline() {
     assert(m_inst_in_pipeline > 0);
     m_inst_in_pipeline--;
-    printf("[ZSY] dec_inst_in_pipeline(), warp = %d, cnt = %d\n", m_warp_id, m_inst_in_pipeline);
   }
 
   unsigned get_cta_id() const { return m_cta_id; }

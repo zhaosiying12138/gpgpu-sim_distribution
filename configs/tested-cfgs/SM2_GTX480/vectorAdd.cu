@@ -46,9 +46,6 @@ __global__ void vectorAdd(int *data_in, int *data_out, int numElements) {
   int tid = threadIdx.x;
   if (tid < 8) {
     data_out[tid] = data_in[tid] + 10000;
-    data_out[tid] = data_out[tid] + 100;
-    data_out[tid] = data_out[tid] + 100;
-    data_out[tid] = data_out[tid] + 100;
   } else {
     data_out[tid] = data_in[tid] + 100;
     data_out[tid] = data_out[tid] + 100;

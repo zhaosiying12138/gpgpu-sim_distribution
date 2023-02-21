@@ -554,10 +554,10 @@ int shader_core_ctx::find_idle_warp() {
 }
 
 int shader_core_ctx::split_warp(int src_wid, simt_stack::simt_stack_entry entry) {
+  assert(entry.m_active_mask.any());
   int new_wid = find_idle_warp();
   assert(new_wid != -1);
   m_warp[new_wid]->init(entry.m_pc, m_warp[src_wid]->get_cta_id(), new_wid, entry.m_active_mask, src_wid, m_dynamic_warp_id);
-  assert(entry.m_active_mask.any());
   m_simt_stack[new_wid]->launch(src_wid, entry);
   m_warp[src_wid]->m_active_threads &= ~(entry.m_active_mask);
   ++m_dynamic_warp_id;
@@ -926,8 +926,6 @@ void shader_core_ctx::fetch() {
 
         // this code checks if this warp has finished executing and can be
         // reclaimed
-        if (warp_id == 1 && m_warp[1]->functional_done()==1 && m_warp[1]->stores_done()==1 && m_warp[1]->num_inst_in_pipeline()==1)
-          printf("[ZSY] okasiina...\n");
         if (m_warp[warp_id]->hardware_done() &&
             !m_scoreboard->pendingWrites(warp_id) &&
             !m_warp[warp_id]->done_exit()) {
@@ -957,7 +955,6 @@ void shader_core_ctx::fetch() {
             printf("[ZSY] warp %d really exit at fetch()\n", warp_id);
           }
           --m_active_warps;
-          printf("[ZSY] warp %d exit, active_warps = %d\n", warp_id, m_active_warps);
           assert(m_active_warps >= 0);
         }
 
@@ -1014,7 +1011,7 @@ void shader_core_ctx::fetch() {
 }
 
 void exec_shader_core_ctx::func_exec_inst(warp_inst_t &inst) {
-  execute_warp_inst_t(inst, inst.original_wid()); //!!!ZSY_DEBUG
+  execute_warp_inst_t(inst, inst.original_wid());
   if (inst.is_load() || inst.is_store()) {
     inst.generate_mem_accesses();
     // inst.print_m_accessq();
@@ -1157,7 +1154,7 @@ void scheduler_unit::order_by_priority(
     abort();
   }
 }
-#define SCHED_DPRINTF printf
+#define SCHED_DPRINTF
 void scheduler_unit::cycle() {
   SCHED_DPRINTF("scheduler_unit::cycle()\n");
   bool valid_inst =
@@ -1191,7 +1188,7 @@ void scheduler_unit::cycle() {
 
     if (warp(warp_id).ibuffer_empty())
       SCHED_DPRINTF(
-          "Warp (warp_id %u, dynamic_warp_id %u)  ibuffer_empty\n",
+          "Warp (warp_id %u, dynamic_warp_id %u) fails as ibuffer_empty\n",
           (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
 
     if (warp(warp_id).waiting())
@@ -1199,11 +1196,6 @@ void scheduler_unit::cycle() {
           "Warp (warp_id %u, dynamic_warp_id %u) fails as waiting for "
           "barrier\n",
           (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
-
-    //if (warp(warp_id).hardware_done()) {
-    //  warp(warp_id).set_done_exit();
-    //  printf("[ZSY] set warp(%d) hardware done at cycle %d\n", warp_id, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
-    //}
 
     while (!warp(warp_id).waiting() && !warp(warp_id).ibuffer_empty() &&
            (checked < max_issue) && (checked <= issued) &&
@@ -1221,7 +1213,7 @@ void scheduler_unit::cycle() {
       unsigned pc, rpc;
       m_shader->get_pdom_stack_top_info(warp_id, pI, &pc, &rpc);
       if (pc == -2) {
-        printf("warp %d stalled at ipdom at cycles %d\n", warp_id, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+        printf("warp %d stalled at reconvergence pc at cycles %d\n", warp_id, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
         return;
       }
       SCHED_DPRINTF(
@@ -3773,9 +3765,6 @@ void shader_core_ctx::store_ack(class mem_fetch *mf) {
          (m_config->gpgpu_perfect_mem && mf->get_is_write()));
   unsigned warp_id = mf->get_wid();
   m_warp[warp_id]->dec_store_req();
-  if (warp_id == 0 && m_warp[warp_id]->stores_done()) {
-    printf("[ZSY] why dont dec inst in pipeline\n");
-  }
 }
 
 void shader_core_ctx::print_cache_stats(FILE *fp, unsigned &dl1_accesses,
@@ -3813,9 +3802,6 @@ bool shd_warp_t::functional_done() const {
 }
 
 bool shd_warp_t::hardware_done() const {
- // if (m_warp_id == 1) {
-    printf("[ZSY] warp %d hardware_done check, %d, %d, %d\n", m_warp_id, functional_done(), stores_done(), num_inst_in_pipeline());
- // }
   return functional_done() && stores_done() && !inst_in_pipeline();
 }
 
