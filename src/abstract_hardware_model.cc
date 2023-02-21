@@ -1035,7 +1035,7 @@ void simt_stack::print(FILE *fout) const {
 }
 
 void simt_stack::print_st() const {
-  printf("warp_id: %02d, original_wid: %02d, parent_wid: %02d, ", m_warp_id, m_original_wid, 67);
+  printf("warp_id: %02d, original_wid: %02d, ", m_warp_id, m_original_wid);
   if (m_stack.size() == 0) {
     printf("[N/A]: pending exit\n");
   } else {
@@ -1067,7 +1067,7 @@ void simt_stack::print_rt() const {
   } else {
     for (int i = 0; i < rt_stack.size(); i++) {
       simt_stack_entry stack_entry = rt_stack[i];
-      printf("split_wid: %02d, ", 43);
+      printf("split_wid: %02d, ", stack_entry.m_split_wid);
       printf("record_mask: ");
       for (int j = m_warp_size - 1; j >= 0; j--) {
         printf("%c", (stack_entry.m_active_mask.test(j) ? '1' : '0'));
@@ -1215,12 +1215,13 @@ void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
         m_warp_id, m_original_wid, GPGPU_Context()->clock());
       m_shader->display_st_rt();
       int rtid = m_stack.back().m_rtid;
+      int split_wid = rt_stack[rtid].m_split_wid;
       simt_mask_t msk = m_stack.back().m_active_mask;
-      auto& st_stack = m_shader->m_simt_stack[m_original_wid]->m_stack;
+      auto& st_stack = m_shader->m_simt_stack[split_wid]->m_stack;
       //!!ZSY_DEBUG:TODO:atomic bitset!!
       rt_stack[rtid].m_pending_mask &= ~msk;
       m_stack.pop_back();
-      if (m_warp_id != m_original_wid) { // destroy this tmp warp split
+      if (m_warp_id != split_wid) { // destroy this tmp warp split
         for (int i = 0; i < m_warp_size; i++) {
           if (msk.test(i)) {
             m_shader->m_warp[m_warp_id]->set_completed(i);
@@ -1240,7 +1241,7 @@ void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
         st_stack.back().m_rtid = rt_stack.back().m_rtid;
         st_stack.back().m_type = rt_stack.back().m_type;
         rt_stack.pop_back();
-        m_shader->m_warp[m_original_wid]->m_active_threads = st_stack.back().m_active_mask; //reset the active mask
+        m_shader->m_warp[split_wid]->m_active_threads = st_stack.back().m_active_mask; //reset the active mask
       }
       printf("[ZSY][SIMT_STACK] after warp %d (original_warp_id = %d) exit from simt stack at cycle %d\n",
         m_warp_id, m_original_wid, GPGPU_Context()->clock());
@@ -1269,6 +1270,7 @@ void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
         rt_stack.back().m_recvg_pc = m_stack.back().m_recvg_pc;
         rt_stack.back().m_rtid = m_stack.back().m_rtid;
         rt_stack.back().m_type = m_stack.back().m_type;
+        rt_stack.back().m_split_wid = m_warp_id;
 
         m_stack.pop_back();
         m_stack.push_back(simt_stack_entry());

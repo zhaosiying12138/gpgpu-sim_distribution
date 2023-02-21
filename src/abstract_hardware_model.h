@@ -433,6 +433,7 @@ class simt_stack {
     int m_rtid;
     unsigned long long m_branch_div_cycle;
     stack_entry_type m_type;
+    unsigned m_split_wid;
     simt_stack_entry()
         : m_pc(-1),
           m_calldepth(0),
@@ -441,7 +442,8 @@ class simt_stack {
           m_recvg_pc(-1),
           m_rtid(-1),
           m_branch_div_cycle(0),
-          m_type(STACK_ENTRY_TYPE_NORMAL){};
+          m_type(STACK_ENTRY_TYPE_NORMAL),
+          m_split_wid(-1) {}
   };
   void launch(unsigned original_wid, simt_stack_entry new_stack_entry);
   std::deque<simt_stack_entry> m_stack;
