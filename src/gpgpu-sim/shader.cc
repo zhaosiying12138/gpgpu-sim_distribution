@@ -930,7 +930,7 @@ void shader_core_ctx::fetch() {
         // this code checks if this warp has finished executing and can be
         // reclaimed
         if (m_warp[warp_id]->hardware_done() &&
-            !m_scoreboard->pendingWrites(warp_id) &&
+            !m_scoreboard->pendingWrites(warp_id) && //ZSY_Warning! Maybe Buggy for warp split!!!
             !m_warp[warp_id]->done_exit()) {
           bool did_exit = false;
           if (m_warp[warp_id]->get_original_wid() == m_warp[warp_id]->get_warp_id()) {
@@ -1162,9 +1162,10 @@ void scheduler_unit::order_by_priority(
     abort();
   }
 }
-//#define SCHED_DPRINTF printf
+#define SCHED_DPRINTF printf
+#define SCHED_DPRINTF2
 void scheduler_unit::cycle() {
-  SCHED_DPRINTF("scheduler_unit::cycle()\n");
+  SCHED_DPRINTF2("scheduler_unit::cycle()\n");
   bool valid_inst =
       false;  // there was one warp with a valid instruction to issue (didn't
               // require flush due to control hazard)
@@ -1180,7 +1181,7 @@ void scheduler_unit::cycle() {
     if ((*iter) == NULL || (*iter)->done_exit()) {
       continue;
     }
-    SCHED_DPRINTF("Testing (warp_id %u, dynamic_warp_id %u)\n",
+    SCHED_DPRINTF2("Testing (warp_id %u, dynamic_warp_id %u)\n",
                   (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
     unsigned warp_id = (*iter)->get_warp_id();
     unsigned checked = 0;
@@ -1195,12 +1196,12 @@ void scheduler_unit::cycle() {
                                                  // Pascal)
 
     if (warp(warp_id).ibuffer_empty())
-      SCHED_DPRINTF(
+      SCHED_DPRINTF2(
           "Warp (warp_id %u, dynamic_warp_id %u) fails as ibuffer_empty\n",
           (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
 
     if (warp(warp_id).waiting())
-      SCHED_DPRINTF(
+      SCHED_DPRINTF2(
           "Warp (warp_id %u, dynamic_warp_id %u) fails as waiting for "
           "barrier\n",
           (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
@@ -1221,12 +1222,14 @@ void scheduler_unit::cycle() {
       unsigned pc, rpc;
       m_shader->get_pdom_stack_top_info(warp_id, pI, &pc, &rpc);
       if (pc == -2) {
-        printf("[ZSY][SCHED] warp %d stalled at reconvergence pc at cycles %d\n", warp_id, GPGPU_Context()->clock());
-        return;
+        //printf("[ZSY][SCHED] warp %d stalled at reconvergence pc at cycles %d\n", warp_id, GPGPU_Context()->clock());
+        break; //[ZSY_DEBUG]!!!NOT return! BREAK!!!
       }
+      SCHED_DPRINTF("before issue: ");
+      m_scoreboard->printContents();
       SCHED_DPRINTF(
-          "Warp (warp_id %u, dynamic_warp_id %u) has valid instruction (%s)\n",
-          (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id(),
+          "Warp (warp_id %u, original_warp_id %u) has valid instruction (%s)\n",
+          (*iter)->get_warp_id(), (*iter)->get_original_wid(),
           m_shader->m_config->gpgpu_ctx->func_sim->ptx_get_insn_str(pc)
               .c_str());
       if (pI) {
@@ -1241,10 +1244,10 @@ void scheduler_unit::cycle() {
           warp(warp_id).ibuffer_flush();
         } else {
           valid_inst = true;
-          if (!m_scoreboard->checkCollision(warp_id, pI)) {
+          if (!m_scoreboard->checkCollision((*iter)->get_original_wid(), m_shader->get_active_mask(warp_id, pI), pI)) {
             SCHED_DPRINTF(
-                "Warp (warp_id %u, dynamic_warp_id %u) passes scoreboard\n",
-                (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
+                "Warp (warp_id %u, original_warp_id %u) passes scoreboard at cycle %d\n",
+                (*iter)->get_warp_id(), (*iter)->get_original_wid(), GPGPU_Context()->clock());
             ready_inst = true;
 
             const active_mask_t &active_mask =
@@ -1412,8 +1415,8 @@ void scheduler_unit::cycle() {
             }  // end of else
           } else {
             SCHED_DPRINTF(
-                "Warp (warp_id %u, dynamic_warp_id %u) fails scoreboard\n",
-                (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
+                "Warp (warp_id %u, original_warp_id %u) fails scoreboard at cycle %d\n",
+                (*iter)->get_warp_id(), (*iter)->get_original_wid(), GPGPU_Context()->clock());
           }
         }
       } else if (valid) {
@@ -1427,8 +1430,10 @@ void scheduler_unit::cycle() {
       }
       if (warp_inst_issued) {
         SCHED_DPRINTF(
-            "Warp (warp_id %u, dynamic_warp_id %u) issued %u instructions\n",
-            (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id(), issued);
+            "Warp (warp_id %u, original_warp_id %u) issued %u instructions at cycle %d\n",
+            (*iter)->get_warp_id(), (*iter)->get_original_wid(), issued, GPGPU_Context()->clock());
+        SCHED_DPRINTF("after issue: ");
+        m_scoreboard->printContents();
         do_on_warp_issued(warp_id, issued, iter);
       }
       checked++;
@@ -1983,7 +1988,8 @@ void ldst_unit::L1_latency_queue_cycle() {
               if (!still_pending) {
                 m_pending_writes[mf_next->get_inst().warp_id()].erase(
                     mf_next->get_inst().out[r]);
-                m_scoreboard->releaseRegister(mf_next->get_inst().warp_id(),
+                m_scoreboard->releaseRegister(mf_next->get_inst().original_wid(),
+                                              mf_next->get_inst().get_warp_active_mask(),
                                               mf_next->get_inst().out[r]);
                 m_core->warp_inst_complete(mf_next->get_inst());
               }
@@ -2472,12 +2478,14 @@ void ldst_unit::writeback() {
                 --m_pending_writes[m_next_wb.warp_id()][m_next_wb.out[r]];
             if (!still_pending) {
               m_pending_writes[m_next_wb.warp_id()].erase(m_next_wb.out[r]);
-              m_scoreboard->releaseRegister(m_next_wb.warp_id(),
+              m_scoreboard->releaseRegister(m_next_wb.original_wid(),
+                                            m_next_wb.get_warp_active_mask(),
                                             m_next_wb.out[r]);
               insn_completed = true;
             }
           } else {  // shared
-            m_scoreboard->releaseRegister(m_next_wb.warp_id(),
+            m_scoreboard->releaseRegister(m_next_wb.original_wid(),
+                                          m_next_wb.get_warp_active_mask(),
                                           m_next_wb.out[r]);
             insn_completed = true;
           }
