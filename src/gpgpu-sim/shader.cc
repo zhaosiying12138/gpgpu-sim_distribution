@@ -1162,7 +1162,10 @@ void scheduler_unit::order_by_priority(
     abort();
   }
 }
-#define SCHED_DPRINTF printf
+
+// SCHED_DPRINTF disabled default
+//#define SCHED_DPRINTF printf
+#define SCHED_DPRINTF
 #define SCHED_DPRINTF2
 void scheduler_unit::cycle() {
   SCHED_DPRINTF2("scheduler_unit::cycle()\n");
@@ -2340,6 +2343,9 @@ void pipelined_simd_unit::cycle() {
     if (!m_dispatch_reg->dispatch_delay()) {
       int start_stage =
           m_dispatch_reg->latency - m_dispatch_reg->initiation_interval;
+      // [ZSY_Debug][TESTONLY!] you should never uncomment it until you would like
+      // to disable the pipeline of simd unit to make some strange test.
+      // start_stage = start_stage < 0 ? 0 : start_stage;
       move_warp(m_pipeline_reg[start_stage], m_dispatch_reg);
       active_insts_in_pipeline++;
     }

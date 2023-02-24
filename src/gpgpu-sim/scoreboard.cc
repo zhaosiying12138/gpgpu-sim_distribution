@@ -32,7 +32,9 @@
 #include "shader_trace.h"
 #include "../../libcuda/gpgpu_context.h"
 
-#define SCOREBOARD_DPRINTF printf
+// SCOREBOARD_DPRINTF disabled default
+//#define SCOREBOARD_DPRINTF printf
+#define SCOREBOARD_DPRINTF
 
 // Constructor
 Scoreboard::Scoreboard(unsigned sid, unsigned n_warps, class gpgpu_t* gpu)
@@ -47,24 +49,22 @@ Scoreboard::Scoreboard(unsigned sid, unsigned n_warps, class gpgpu_t* gpu)
 
 // Print scoreboard contents
 void Scoreboard::printContents() const {
-#ifdef SCOREBOARD_DPRINTF
   bool is_empty = true;
-  printf("scoreboard contents (sid=%d): \n", m_sid);
+  SCOREBOARD_DPRINTF("scoreboard contents (sid=%d): \n", m_sid);
   for (unsigned i = 0; i < reg_table.size(); i++) {
     if (reg_table[i].size() == 0) continue;
-    printf("  wid = %2d: ", i);
+    SCOREBOARD_DPRINTF("  wid = %2d: ", i);
     for (auto it = reg_table[i].begin(); it != reg_table[i].end(); it++) {
-      printf("%u(", it->first);
+      SCOREBOARD_DPRINTF("%u(", it->first);
       print_active_mask(it->second);
-      printf(") ");
+      SCOREBOARD_DPRINTF(") ");
     }
-    printf("\n");
+    SCOREBOARD_DPRINTF("\n");
     is_empty = false;
   }
   if (is_empty) {
-    printf("[N/A]\n");
+    SCOREBOARD_DPRINTF("[N/A]\n");
   }
-#endif
 }
 
 void Scoreboard::reserveRegister(unsigned wid, active_mask_t msk, unsigned regnum) {
