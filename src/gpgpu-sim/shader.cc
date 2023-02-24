@@ -1225,6 +1225,7 @@ void scheduler_unit::cycle() {
       unsigned pc, rpc;
       m_shader->get_pdom_stack_top_info(warp_id, pI, &pc, &rpc);
       if (pc == -2) {
+        // this print log disabled defaultly
         //printf("[ZSY][SCHED] warp %d stalled at reconvergence pc at cycles %d\n", warp_id, GPGPU_Context()->clock());
         break; //[ZSY_DEBUG]!!!NOT return! BREAK!!!
       }
